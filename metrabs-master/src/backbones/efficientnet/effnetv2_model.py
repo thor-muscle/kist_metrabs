@@ -414,7 +414,7 @@ class Stem(keras.layers.Layer):
             data_format=mconfig.data_format,
             use_bias=False,
             name='conv2d')
-        self._norm = utils.normalization(
+        self._norm = utils.normalization(   # _BatchNorm 객체임.
             mconfig.bn_type,
             axis=(1 if mconfig.data_format == 'channels_first' else -1),
             momentum=mconfig.bn_momentum,
@@ -526,7 +526,7 @@ class EffNetV2Model(keras.Model):
         self._blocks = []
 
         # Stem part.
-        self._stem = Stem(self._mconfig, self._mconfig.blocks_args[0].input_filters)
+        self._stem = Stem(self._mconfig, self._mconfig.blocks_args[0].input_filters)    # stem[ conv2d -> bn -> act_fn ]
 
         # Builds blocks.
         block_id = itertools.count(0)
@@ -580,6 +580,8 @@ class EffNetV2Model(keras.Model):
             inputs=[inputs], outputs=self.call(inputs, training=True))
         return model
 
+    # main.train.MODEL에서 trainer생성하면서, model(metrabs)이 call된단말임. 거기서 backbone()하고 call해서 그거 보는중.
+    # input으론  image<Keras.Input(N,N,3)>, training=None 총 두개 들어옴.
     def call(self, inputs, training, with_endpoints=False):
         """Implementation of call().
         Args:
@@ -594,14 +596,14 @@ class EffNetV2Model(keras.Model):
         reduction_idx = 0
 
         # Calls Stem layers
-        outputs = self._stem(inputs, training)
+        outputs = self._stem(inputs, training)          #1 outputs = conv2d,BN,act_fn(Input(N,N,3),training=None) 인 Layer -- 지금 모델 만드는중이라 좀 이상할수도 있음.
         logging.debug('Built stem: %s (%s)', outputs.shape, outputs.dtype)
-        self.endpoints['stem'] = outputs
+        self.endpoints['stem'] = outputs    #2 첫 endpoints 'stem'으로 outputs 넣음.
 
         # Calls blocks.
         for idx, block in enumerate(self._blocks):
             is_reduction = False  # reduction flag for blocks after the stem layer
-            if ((idx == len(self._blocks) - 1) or
+            if ((idx == len(self._blocks) - 1) or   # 다 돌았으면
                     self._blocks[idx + 1].block_args.strides > 1):
                 is_reduction = True
                 reduction_idx += 1
@@ -613,18 +615,18 @@ class EffNetV2Model(keras.Model):
                 logging.debug('block_%s survival_prob: %s', idx, survival_prob)
 
             outputs = block(outputs, training=training, survival_prob=survival_prob)
-            self.endpoints['block_%s' % idx] = outputs
-            if is_reduction:
-                self.endpoints['reduction_%s' % reduction_idx] = outputs
+            self.endpoints['block_%s' % idx] = outputs      #3 둘째~ block수만큼 output들을 endpoints에 차곡차곡 저장함.
+            if is_reduction:    # block 다 돌면 실행,
+                self.endpoints['reduction_%s' % reduction_idx] = outputs    #4 저렇게 또 endpoints에 저장함.
             if block.endpoints:
                 for k, v in six.iteritems(block.endpoints):
                     self.endpoints['block_%s/%s' % (idx, k)] = v
                     if is_reduction:
                         self.endpoints['reduction_%s/%s' % (reduction_idx, k)] = v
-        self.endpoints['features'] = outputs
+        self.endpoints['features'] = outputs            #4 block들 다 돌고나면 blocks 결과를 features로 저장함.
 
         # Head to obtain the final feature.
-        outputs = self._head(outputs, training)
+        outputs = self._head(outputs, training)         #5 마지막으로 dense prediction(head) 스탭을 밟음. (1x1conv -- norm -- act 하는듯.), 이거 반환.
         self.endpoints.update(self._head.endpoints)
 
         # Calls final dense layers and returns logits.
@@ -645,9 +647,10 @@ class EffNetV2Model(keras.Model):
         return outputs
 
 
-def get_model(model_name,
+# net = EffNetV2Model() 로 모델 만들어주고 -> 어떤 설정 넣어주고 -> 사전학습 체크시 인터넷서 weight 다운해서 먹여주고 -> return net
+def get_model(model_name,               # FLAGS.backbone - main.train.MODEL부분에서 첫 backbone 만들 때 기준
               model_config=None,
-              include_top=True,
+              include_top=True,         # False - main.train.MODEL부분에서 첫 backbone 만들 때 기준
               pretrained=True,
               training=True,
               with_endpoints=False,
@@ -665,8 +668,13 @@ def get_model(model_name,
     Returns:
       A single tensor if with_endpoints if False; otherwise, a list of tensor.
     """
-    net = EffNetV2Model(model_name, model_config, include_top, **kwargs)
-    net(keras.Input(shape=(None, None, 3)), training=training, with_endpoints=with_endpoints)
+    net = EffNetV2Model(model_name, model_config, include_top, **kwargs)    # net: Keras로 만들어진 effnet
+    net(keras.Input(shape=(None, None, 3)), training=training, with_endpoints=with_endpoints)   # 어떤 설정 넣어준듯.
+    """
+    keras로 만들어졌기 땜에, 이렇게 __call__(): build() -> call() 이 작동한다.
+    """
+
+    # 사전학습 된거면, 웹에서 ckpt 불러온다.
     if pretrained is True:  # pylint: disable=g-bool-id-comparison
         # pylint: disable=line-too-long
         # download checkpoint and set pretrained path. Supported models include:
@@ -684,8 +692,9 @@ def get_model(model_name,
                f'efficientnet/v2/{url_name}.tgz')
         pretrained_ckpt = tf.keras.utils.get_file(url_name, url, untar=True)
     else:
-        pretrained_ckpt = pretrained
+            pretrained_ckpt = pretrained # False
 
+    # ckpt불러왔으면, net에 먹여준다.
     if pretrained_ckpt:
         if tf.io.gfile.isdir(pretrained_ckpt):
             pretrained_ckpt = tf.train.latest_checkpoint(pretrained_ckpt)

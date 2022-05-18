@@ -17,19 +17,38 @@ from options import FLAGS
 class Metrabs(keras.Model):
     def __init__(self, backbone, joint_info):
         super().__init__()
-        self.backbone = backbone
+        self.backbone = backbone    # 3개중 선택해 만들은 backbone 가져오고
         self.joint_names = tf.Variable(np.array(joint_info.names), trainable=False)
         self.joint_edges = tf.Variable(np.array(joint_info.stick_figure_edges), trainable=False)
-        self.joint_info = joint_info
+        self.joint_info = joint_info    # joints 관련 정보들 정리하고,
         n_raw_points = 32 if FLAGS.transform_coords else joint_info.n_joints
-        self.heatmap_heads = MetrabsHeads(n_points=n_raw_points)
+        self.heatmap_heads = MetrabsHeads(n_points=n_raw_points)    # ?
         if FLAGS.transform_coords:
             self.recombination_weights = tf.constant(np.load('32_to_122'))
 
+    #1 MeTRAbsTrainer에서 init하면서 model만들자마자 call할 때 기작
+    """
+        inp->   (
+                    inp = keras.Input(shape=(None, None, 3), dtype=tfu.get_dtype()),
+                    intr = keras.Input(shape=(3, 3), dtype=tf.float32)
+                )
+        일단 저 둘이 tuple로 묶여서 inp로 들어옴. 어딘가에서 Net의 input으로 쓰일 애들임.
+        
+        features를 뽑는다.
+    """
     def call(self, inp, training=None):
+        """
+            inp: MeTRAbsTrainer보니깐, 별 의미없는 input인듯
+        """
         image, intrinsics = inp
-        features = self.backbone(image, training=training)
-        coords2d, coords3d = self.heatmap_heads(features, training=training)
+        features = self.backbone(image, training=training)      # features: models.Effnetv2결과인 outputs return!
+        coords2d, coords3d = self.heatmap_heads(features, training=training)    #################################################################################### 여기부터!!!
+        """
+        22.05.19
+        main - train - MODEL 에서, scope()내에서 trainer_class 생성할 때 생성자에서 model에 첫 input을 넣고 실행하는데, 그 때 기작을 보는중이었음.   
+        model - effnetv2  썼다고 가정함.
+           
+        """
         coords3d_abs = tfu3d.reconstruct_absolute(coords2d, coords3d, intrinsics)
         if FLAGS.transform_coords:
             coords3d_abs = self.latent_points_to_joints(coords3d_abs)
@@ -76,7 +95,7 @@ class MetrabsTrainer(models.model_trainer.ModelTrainer):
         self.model = metrabs_model
         inp = keras.Input(shape=(None, None, 3), dtype=tfu.get_dtype())
         intr = keras.Input(shape=(3, 3), dtype=tf.float32)
-        self.model((inp, intr), training=False)
+        self.model((inp, intr), training=False)         # inp: image / intr: intrinsics
 
     def forward_train(self, inps, training):
         preds = AttrDict()
