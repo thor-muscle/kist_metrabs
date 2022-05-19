@@ -7,6 +7,9 @@ from options import FLAGS
 
 
 def heatmap_to_image(coords, is_training):
+    """
+    heatmap결과인 skeleton coordinate를 image sacle에 맞춰서 변환하는 듯
+    """
     stride = FLAGS.stride_train if is_training else FLAGS.stride_test
 
     stride //= FLAGS.final_transposed_conv
@@ -24,11 +27,14 @@ def heatmap_to_25d(coords, is_training):
     coords2d = heatmap_to_image(coords[..., :2], is_training)
     return tf.concat([coords2d, coords[..., 2:] * FLAGS.box_size_mm], axis=-1)
 
-
+# metrabs.py - MetrabsHeads - call()
 def heatmap_to_metric(coords, is_training):
-    coords2d = heatmap_to_image(
-        coords[..., :2], is_training) * FLAGS.box_size_mm / FLAGS.proc_side
-    return tf.concat([coords2d, coords[..., 2:] * FLAGS.box_size_mm], axis=-1)
+    """
+    heatmap을 metric scale 결과로 바꿔주는 것 같음!
+    """
+    coords2d = heatmap_to_image(coords[..., :2], is_training) \
+               * FLAGS.box_size_mm / FLAGS.proc_side
+    return tf.concat([coords2d, coords[..., 2:] * FLAGS.box_size_mm], axis=-1)  # 2d이미지?랑 3d좌표 concat함.
 
 
 def matmul_joint_coords(transformation_matrices, coords):

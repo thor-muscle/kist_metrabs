@@ -159,6 +159,10 @@ def train():
         """
         이 구문의 역할: Context manager for distributed learning, 모든 gpu가 잘 작동위해 이 내부를 scope하는 중이라 생각하샘
         sync strategy의 경우, 여기서 만들어지는 모든 변수는 분산학습되는 모든 GPU에서 동일하게 생김. 이렇게 변수를 strategy에 맞게 관리함.
+        
+        - 모델 만든다.
+        - 모델 trainer 만든다.
+        - trainer 에 optimizer 넣어준다.
         """
         global_step = tf.Variable(n_completed_steps, dtype=tf.int32, trainable=False)   # global_step: 이전에 완료된 step 부터 집계?
         backbone = backbones.builder.build_backbone()                                   # FLAGS에서 인자 받아와서 3가지 모델(effnetv2, resnet, mobilenet)중 하나 선택해 pretrained된 backbone 만든다.
@@ -176,19 +180,14 @@ def train():
             models가 저 models.py 말한거였음.
             models에서 FLAGS.model_class 이름의 속성인 클래스를 model_class로 지정한다.
         """
-        bone_lengths = (dataset3d.trainval_bones if FLAGS.train_on == 'trainval' else dataset3d.train_bones)        # bone_lengths: raw_dataset의 att중 하나인 bones(뼈)에 관한 속성을 불러옴. (train, trainval 별로) -- extra_args를 위한 변수
+        bone_lengths = (dataset3d.trainval_bones if FLAGS.train_on == 'trainval' else dataset3d.train_bones)        # bone_lengths: twofive꺼. raw_dataset의 att중 하나인 bones(뼈)에 관한 속성을 불러옴. (train, trainval 별로) -- extra_args를 위한 변수
         extra_args = [bone_lengths] if FLAGS.model_class.startswith('Model25D') else []                             # extra_args: twofive.py 에서 가져오는 모델들에게만 필요한 녀석.
         model = model_class(backbone, joint_info3d, *extra_args)                                                # 앞에서 가져온 model 클래스에 앞선 backbone 넣고, joint_info3d넣고, twofive.py에서 가져온 Model25D 같은 경우는 bone_lengths 까지 넣어줌.
         # 바로 위에, *extra_args 를 안받는 model_class 들도 있는데 저렇게 해도 괜찮은거야? [] 들어갈텐데 말이야. -> 확인 해보기
         trainer = trainer_class(model, joint_info3d, joint_info2d, global_step)                                 # 저렇게 4가지를 param으로 받음. 여기서, model <- MeTRAbs(backbone, joint_info3d) 클래스 객체임.
-        ################################################!!!!!!!!#####################################바로 위에부터!!
-        trainer.compile(optimizer=build_optimizer(global_step, n_repl))
-        model.optimizer = trainer.optimizer
-
-
-
-
-
+        trainer.compile(optimizer=build_optimizer(global_step, n_repl))                                         # keras.Model 클래스의 API - compile(): 학습을 목적으로 모델 구성하는 절차.
+                                                                                                                # compile(optimizer, loss=None, metrics=None, loss_weights=None, sample_weight_mode=None, weighted_metrics=None, target_tensors=None)
+        model.optimizer = trainer.optimizer # trainer에 optimizer 부여.
 
 
     #######
@@ -206,13 +205,10 @@ def train():
 
 
 
-
-
-
-
     #######
     # CALLBACKS
     #######
+    # 훈련중 특정 point에서 callback되는 그런거.
     cbacks = [
         keras.callbacks.LambdaCallback(
             on_train_begin=lambda logs: trainer._train_counter.assign(n_completed_steps),
@@ -229,11 +225,6 @@ def train():
 
 
 
-
-
-
-
-
     #######
     # FITTING
     #######
@@ -247,7 +238,7 @@ def train():
             f'{FLAGS.checkpoint_dir}/model', include_optimizer=False, overwrite=True,
             options=tf.saved_model.SaveOptions(experimental_custom_gradients=True))
     except KeyboardInterrupt:
-        logger.info('Training interrupted.')
+        logger.info('Training interrupted by keyboard.')
     except tf.errors.ResourceExhaustedError:
         logger.info('Resource Exhausted!')
     finally:
@@ -258,12 +249,13 @@ def train():
 
 
 
-
+# trainer에 들어가는 optimizer
 def build_optimizer(global_step, n_replicas):
     def weight_decay():
         lr_ratio = lr_schedule(global_step) / FLAGS.base_learning_rate
         # Decay the weight decay itself over time the same way as the learning rate is decayed.
         # Division by sqrt(num_training_steps) is taken from the original AdamW paper.
+        # exponential decaying  scheduler 사용했음. keras꺼.
         return FLAGS.weight_decay * lr_ratio / np.sqrt(FLAGS.training_steps)
 
     def lr():
@@ -341,11 +333,11 @@ def export():
     ji = dataset3d.joint_info
     del dataset3d
     backbone = backbones.builder.build_backbone()
-    model = models.metrabs.Metrabs(backbone, ji)
+    model = models.metrabs.Metrabs(backbone, ji)        # 모델 만들고
 
-    ckpt = tf.train.Checkpoint(model=model)
-    ckpt_manager = tf.train.CheckpointManager(ckpt, FLAGS.checkpoint_dir, None)
-    restore_if_ckpt_available(ckpt, ckpt_manager, expect_partial=True)
+    ckpt = tf.train.Checkpoint(model=model)             # 이 클래스는 manage saving, restoring trackable values to disk.
+    ckpt_manager = tf.train.CheckpointManager(ckpt, FLAGS.checkpoint_dir, None)     # 방금 그놈을 ckpt_manager로 감싸줬음.
+    restore_if_ckpt_available(ckpt, ckpt_manager, expect_partial=True)              # ckpt있으면 그걸로 복원한단거같음.
 
     if FLAGS.load_path:
         load_path = util.ensure_absolute_path(FLAGS.load_path, FLAGS.checkpoint_dir)
@@ -355,7 +347,7 @@ def export():
 
     checkpoint_dir = os.path.dirname(load_path)
     out_path = util.ensure_absolute_path(FLAGS.export_file, checkpoint_dir)
-    # 지정된 경로로 model을 저장한다.
+    # 지정된 경로로 model의 ckpt, output을 저장한다.
     model.save(
         out_path, include_optimizer=False, overwrite=True,
         options=tf.saved_model.SaveOptions(experimental_custom_gradients=True))
@@ -366,11 +358,15 @@ def export():
 
 def predict():
     dataset3d = data.datasets3d.get_dataset(FLAGS.dataset)
+
     backbone = backbones.builder.build_backbone()
+
     model_class = getattr(models, FLAGS.model_class)
     trainer_class = getattr(models, FLAGS.model_class + 'Trainer')
+
     model_joint_info = data.datasets3d.get_joint_info(FLAGS.model_joints)
 
+    # steps just for Model25D
     if FLAGS.model_class.startswith('Model25D'):
         bone_dataset = data.datasets3d.get_dataset(FLAGS.bone_length_dataset)
         bone_lengths = (
@@ -379,11 +375,12 @@ def predict():
         extra_args = [bone_lengths]
     else:
         extra_args = []
+
     model = model_class(backbone, model_joint_info, *extra_args)
     trainer = trainer_class(model, model_joint_info)
-    trainer.predict_tensor_names = [
-        'coords3d_rel_pred', 'coords3d_pred_abs', 'rot_to_world', 'cam_loc', 'image_path']
 
+    trainer.predict_tensor_names = [    # 저거에 해당하는 tensor들 나중에 추출하려고 객체 지역변수에 저거 넣어준거다.
+        'coords3d_rel_pred', 'coords3d_pred_abs', 'rot_to_world', 'cam_loc', 'image_path']
     if FLAGS.viz:
         trainer.predict_tensor_names += ['image', 'coords3d_true']
 
@@ -391,30 +388,33 @@ def predict():
     ckpt_manager = tf.train.CheckpointManager(ckpt, FLAGS.checkpoint_dir, None)
     restore_if_ckpt_available(ckpt, ckpt_manager, expect_partial=True)
 
-    examples3d_test = get_examples(dataset3d, tfu.TEST, FLAGS)
+    examples3d_test = get_examples(dataset3d, tfu.TEST, FLAGS)  # test_examples 만들음.
     data_test = build_dataflow(
         examples3d_test, data.data_loading.load_and_transform3d,
         (dataset3d.joint_info, TEST), TEST, batch_size=FLAGS.batch_size_test,
-        n_workers=FLAGS.workers)
+        n_workers=FLAGS.workers)    # 병렬처리, batch 설정.
     n_predict_steps = int(np.ceil(len(examples3d_test) / FLAGS.batch_size_test))
 
-    r = trainer.predict(
-        data_test, verbose=1 if sys.stdout.isatty() else 0, steps=n_predict_steps)
+    r = trainer.predict(    # keras.Model.predict()
+        data_test,
+        verbose=1 if sys.stdout.isatty() else 0,    # 드디어 predict. 터미널이면 progress bar 활성화
+        steps=n_predict_steps)
+    # r: <numpy.array> of prediction
     r = attrdict.AttrDict(r)
     util.ensure_path_exists(FLAGS.pred_path)
 
     logger.info(f'Saving predictions to {FLAGS.pred_path}')
     try:
-        coords3d_pred = r.coords3d_pred_abs
+        coords3d_pred = r.coords3d_pred_abs     # 이런 이름의 prediction 결과 조회
     except AttributeError:
-        coords3d_pred = r.coords3d_rel_pred
+        coords3d_pred = r.coords3d_rel_pred     # 이런 이름의 prediction 결과 조회
 
     coords3d_pred_world = tf.einsum(
         'nCc, njc->njC', r.rot_to_world, coords3d_pred) + tf.expand_dims(r.cam_loc, 1)
     coords3d_pred_world = models.util.select_skeleton(
         coords3d_pred_world, model_joint_info, FLAGS.output_joints).numpy()
     np.savez(FLAGS.pred_path, image_path=r.image_path, coords3d_pred_world=coords3d_pred_world)
-
+    # 예측 결과를 npz로 저장! 결로는 image_path
 
 
 
@@ -484,9 +484,7 @@ def get_n_completed_steps(logdir, load_path):
         return 0
 
 
-
-
-
+# ckpt available하면 복구할게요
 def restore_if_ckpt_available(
         ckpt, ckpt_manager, global_step_var=None, initial_checkpoint_path=None,
         expect_partial=False):
@@ -498,6 +496,7 @@ def restore_if_ckpt_available(
             resuming_checkpoint_path = os.path.join(FLAGS.checkpoint_dir, resuming_checkpoint_path)
     else:
         resuming_checkpoint_path = ckpt_manager.latest_checkpoint
+    # resuming_ckpt_path 를 확보한다.
 
     load_path = resuming_checkpoint_path if resuming_checkpoint_path else initial_checkpoint_path
     if load_path:
@@ -511,7 +510,7 @@ def restore_if_ckpt_available(
 
 
 
-
+# main
 def main():
     init.initialize()   # FLAGS로 하이퍼파라미터 등 설정
 

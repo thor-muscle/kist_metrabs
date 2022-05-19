@@ -42,12 +42,13 @@ class Metrabs(keras.Model):
         """
         image, intrinsics = inp
         features = self.backbone(image, training=training)      # features: models.Effnetv2결과인 outputs return!
-        coords2d, coords3d = self.heatmap_heads(features, training=training)    #################################################################################### 여기부터!!!
+        coords2d, coords3d = self.heatmap_heads(features, training=training)    # features: backbone result / training: False
+                                                                                #  (2d 예측좌표,   3d-logits->2d좌표,3d좌표) 를 반환.
         """
         22.05.19
         main - train - MODEL 에서, scope()내에서 trainer_class 생성할 때 생성자에서 model에 첫 input을 넣고 실행하는데, 그 때 기작을 보는중이었음.   
         model - effnetv2  썼다고 가정함.
-           
+        
         """
         coords3d_abs = tfu3d.reconstruct_absolute(coords2d, coords3d, intrinsics)
         if FLAGS.transform_coords:
@@ -68,22 +69,44 @@ class Metrabs(keras.Model):
 
 
 class MetrabsHeads(keras.layers.Layer):
-    def __init__(self, n_points):
+    """
+        backbone에서 나온거(B 1280 1 1) or (B 1280) 바로 먹어서  좌표 예측해주는 module
+    """
+    def __init__(self, n_points):   # n_raw_points로 초기화.
         super().__init__()
-        self.n_points = n_points
+        self.n_points = n_points    # n_points: n_raw_points = 32 if FLAGS.transform_coords else joint_info.n_joints -> coords바꿀거면 32로, 아니면
         self.n_outs = [self.n_points, FLAGS.depth * self.n_points]
-        self.conv_final = keras.layers.Conv2D(filters=sum(self.n_outs), kernel_size=1)
+        self.conv_final = keras.layers.Conv2D(filters=sum(self.n_outs), kernel_size=1)  # 1x1 conv fileter 같은데?
+        """
+        conv_final -> n_out개의 필터가진 1x1_CONV layer
+        
+        inp(
+        """
 
     def call(self, inp, training=None):
-        x = self.conv_final(inp)
-        logits2d, logits3d = tf.split(x, self.n_outs, axis=tfu.channel_axis())
-        current_format = 'b h w (d j)' if tfu.get_data_format() == 'NHWC' else 'b (d j) h w'
-        logits3d = einops.rearrange(logits3d, f'{current_format} -> b h w d j', j=self.n_points)
-        coords3d = tfu.soft_argmax(tf.cast(logits3d, tf.float32), axis=[2, 1, 3])
-        coords3d_rel_pred = models.util.heatmap_to_metric(coords3d, training)
-        coords2d = tfu.soft_argmax(tf.cast(logits2d, tf.float32), axis=tfu.image_axes()[::-1])
-        coords2d_pred = models.util.heatmap_to_image(coords2d, training)
-        return coords2d_pred, coords3d_rel_pred
+        x = self.conv_final(inp)    # 1x1 conv                                                      #1 conv_final(1x1)을 해준다, inp = backbone 결과중 image
+        logits2d, logits3d = tf.split(x, self.n_outs, axis=tfu.channel_axis())                      #  x를 n_outs=[n_points, depth*n_points] 이런길이의 두덩이로 채널 차원에 대해 나눔. / 앞은 2d꺼, 뒤는 3d꺼
+        # 급 FLAGS에 뭐 들어오는지 궁금하다. 그렇거 정리된거 없나? -> 여기저기서 parser 사용.
+        current_format = 'b h w (d j)' if tfu.get_data_format() == 'NHWC' else 'b (d j) h w'        #  포맷 딱 지정하고,
+        logits3d = einops.rearrange(logits3d, f'{current_format} -> b h w d j', j=self.n_points)    #  logits3d -> b h w d j(관절개수 n_points) 로 설정. --> h w d 3D-heatmap이 관절개수만큼 존재. batch 별로.
+        coords3d = tfu.soft_argmax(tf.cast(logits3d, tf.float32), axis=[2, 1, 3])                   #2 3d-logits -> 3d-coordinates로 soft-argmax. 좌표 뽑음!
+        coords3d_rel_pred = models.util.heatmap_to_metric(coords3d, training)                       #3 2d이미지?랑 coords3d랑 concat함            {heatmap_to_metric? 그리고 왜 3d인데 2d이미지를 만든거지?}
+        coords2d = tfu.soft_argmax(tf.cast(logits2d, tf.float32), axis=tfu.image_axes()[::-1])      #4 2d히트맵 좌표뽑기! ,  axis: (W,H)->_DATA_FORMAT.index('H'), _DATA_FORMAT.index('W')를 반대순서로 가져옴
+        coords2d_pred = models.util.heatmap_to_image(coords2d, training)                            #  2d좌표를 이미지?로 만들음.
+        return coords2d_pred, coords3d_rel_pred                                                     #  (2d 예측좌표->이미지(2d좌표),   3d-logits->2d이미지,3d좌표) 를 반환.
+    """
+        << 변수 정리 >>
+                name                        shape                                  explanation
+        inp                         ?
+        x                           b h w (2d_out,3d_out)               2d용, 3d용 features concat되어서 나옴. 
+        logits3d                    depth*n_points -> b h w d j         
+            coords3d                soft-argmax    -> b j               hwd 차원에 대해 soft-argmax했음.
+            coords3d_rel_pred       [2dcoords][3dcoords]                결과좌표를 image scale, metric scale로 변환 
+        logits2d                    n_points(b h w j)                   
+            coords2d                ( b j )                             예측 결과 soft-argmax함
+            coords2d_pred                                               2d결과 좌표를 image scale 변환해준
+        
+    """
 
 
 class MetrabsTrainer(models.model_trainer.ModelTrainer):
@@ -92,11 +115,12 @@ class MetrabsTrainer(models.model_trainer.ModelTrainer):
         self.global_step = global_step
         self.joint_info = joint_info
         self.joint_info_2d = joint_info2d
-        self.model = metrabs_model
+        self.model = metrabs_model  # 만들어진 객체 들어옴
         inp = keras.Input(shape=(None, None, 3), dtype=tfu.get_dtype())
         intr = keras.Input(shape=(3, 3), dtype=tf.float32)
-        self.model((inp, intr), training=False)         # inp: image / intr: intrinsics
+        self.model((inp, intr), training=False)         # 들어온 객체 input, intrinsic 퍼즐 넣어줌 -- inp: image(H W 3) / intr(3 3): intrinsics 로 call() or ?
 
+    # 왜 안쓰지? 대신 fit 쓴건가?
     def forward_train(self, inps, training):
         preds = AttrDict()
 

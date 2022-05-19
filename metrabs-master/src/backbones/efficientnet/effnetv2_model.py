@@ -582,6 +582,7 @@ class EffNetV2Model(keras.Model):
 
     # main.train.MODEL에서 trainer생성하면서, model(metrabs)이 call된단말임. 거기서 backbone()하고 call해서 그거 보는중.
     # input으론  image<Keras.Input(N,N,3)>, training=None 총 두개 들어옴.
+    # output모양은 https://paperswithcode.com/model/efficientnet?variant=efficientnet-em 참고!
     def call(self, inputs, training, with_endpoints=False):
         """Implementation of call().
         Args:
@@ -644,7 +645,7 @@ class EffNetV2Model(keras.Model):
                     self.endpoints.get('reduction_5'),
                 ]))
 
-        return outputs
+        return outputs      # (B, 1280) 일듯?
 
 
 # net = EffNetV2Model() 로 모델 만들어주고 -> 어떤 설정 넣어주고 -> 사전학습 체크시 인터넷서 weight 다운해서 먹여주고 -> return net

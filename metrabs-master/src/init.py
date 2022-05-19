@@ -220,7 +220,7 @@ def get_parser():
     parser.add_argument(
         '--image-interpolation-train', type=str, default='linear')  # 'nearest' can be faster
     parser.add_argument('--image-interpolation-test', type=str, default='linear')
-    parser.add_argument('--transform-coords', action=options.BoolAction)
+    parser.add_argument('--transform-coords', action=options.BoolAction)    #
 
     parser.add_argument('--ghost-bn', type=str, default='')
     parser.add_argument('--group-norm', action=options.BoolAction)
